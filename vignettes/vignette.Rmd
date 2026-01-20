@@ -1,0 +1,96 @@
+---
+title: "A Tutorial on Semiparametric Causal Mediation Analysis with CMAPS"
+output: html_document
+date: "2026-01-19"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Installation
+
+```{r installation, eval=FALSE}
+devtools::install_github('jduan607/CMAPS')
+```
+
+## Input
+
+CMAPS expects a matrix or data frame where each row corresponds to a single cell. Required columns include the treatment variable ($A$), outcome variable ($Y$), and mediator ($M$); additional confounders ($C$) may be included if available. The model is fitted one mediator at a time using the proposed semiparametric adaptive bootstrap procedure.
+
+```{r load-data}
+library(CMAPS)
+library(data.table)
+
+directory = 'https://raw.github.com/jduan607/CMAPS/master'
+data = fread(file.path(directory, 'GATA1_BCL2L1.txt'))
+print(head(data[,1:6]))
+```
+
+## Workflow
+
+### Step 1: Heteroscedasticity diagnostic
+
+Assumption 4(c) requires that the conditional variance of the mediator differs across treatment levels, that is,
+$$var(M\mid A=a, C) \neq var(M\mid A=a^*, C),\ \forall a, a^*, C.$$
+This condition ensures identifiability of mediation effects in the presence of unmeasured mediator–outcome confounding.
+
+To empirically assess this assumption, we apply heteroscedasticity tests implemented in the `olsrr` package, which provides score, F, and Breusch–Pagan (BP) tests. The null hypothesis corresponds to homoscedasticity, with heteroscedastic errors under the alternative.
+
+A p-value below a nominal significance level (e.g., 0.05) leads to rejection of the null and provides support for Assumption 4(c). 
+In our analysis, we use the score test. 
+The following example uses STAT5A as the mediator, for which the score test yields a p-value below 0.05, supporting Assumption 4(c).
+
+```{r hs-test}
+library(olsrr)
+
+A = data[['A']]
+M = data[['STAT5A']]
+C = as.matrix(data[,c('mitopercent','UMI_count')])
+
+fit = lm(M ~ A + C)
+hs_pvals = c('score test' = ols_test_score(fit, vars='A')$p,
+             'f test' = ols_test_f(fit, vars='A')$p, 
+             'bp test' = ols_test_breusch_pagan(fit, vars='A')$p)
+
+cat('Heteroscedasticity test p-value: ', hs_pvals['score test'])
+```
+
+### Step 2: Semiparametric estimation
+
+In the semiparametric estimation step, 
+
+  * $\theta_A$: the effect of treatment on the outcome ($A\to Y$)
+  * $\theta_M$: the effect of mediator on the outcome ($M\to Y$)
+  * $\beta_A$: the effect of treatment on the mediator ($A\to M$)
+  * NIE: The natural indirect effect (NIE) is defined as $\theta_M\times \beta_A$
+The standard error of the NIE is obtained using the delta method. 
+
+When `fast = TRUE`, the estimator is obtained using a one-step estimator.
+When `fast = FALSE`, the estimating equations are solved directly using the `nleqslv` package.
+
+```{r sp-estimator}
+res <- SPsingle(
+  dataset   = data,
+  treatment = "A",
+  mediator  = "STAT5A",
+  outcome   = "Y",
+  covariates = c("mitopercent", "UMI_count"),
+  fast = TRUE,
+  detail = TRUE
+)
+
+print(res)
+```
+
+### Step 3: Adaptive bootstrap inference
+
+Based on the semiparametric estimates and their asymptotic covariance matrix, 
+the adaptive bootstrap procedure is used to obtain a p-value for the NIE.
+
+```{r ab-reference}
+ab.pval = ABfast(res, N.boot=1e6, lambda.n=4, test='poc')
+
+cat('Adaptive bootstrap p-value for STAT5A:', ab.pval[1])
+```
+
